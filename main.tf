@@ -72,17 +72,30 @@ resource "aws_vpc" "final-vpc2" {
   }
 }
 
-# Создаем публичную сеть в VPC2
-resource "aws_subnet" "vpc2-Public" {
+# Создаем публичную сеть 1 в VPC2
+resource "aws_subnet" "vpc2-Public1" {
   vpc_id            = aws_vpc.final-vpc2.id
   cidr_block        = "10.1.10.0/24"
   availability_zone = data.aws_availability_zones.available.names[0]
 
   tags = {
-    Name = "vpc2-Public"
+    Name = "vpc2-Public1"
   }
   map_public_ip_on_launch = true
 }
+
+# Создаем публичную сеть 2 в VPC2
+resource "aws_subnet" "vpc2-Public2" {
+  vpc_id            = aws_vpc.final-vpc2.id
+  cidr_block        = "10.1.40.0/24"
+  availability_zone = data.aws_availability_zones.available.names[1]
+
+  tags = {
+    Name = "vpc2-Public2"
+  }
+  map_public_ip_on_launch = true
+}
+
 
 # Создаем приватную сеть в VPC2
 resource "aws_subnet" "vpc2-Private1" {
@@ -191,8 +204,8 @@ resource "aws_route_table_association" "vpc1-Private2-RT-Assoc" {
   route_table_id = aws_route_table.vpc1-Private2-RT.id
 }
 
-# Создаем таблицу маршрутизации для публичной сети в VPC2 c выходом в интернет
-resource "aws_route_table" "vpc2-Public-RT" {
+# Создаем таблицу маршрутизации для публичной сети 1 в VPC2 c выходом в интернет
+resource "aws_route_table" "vpc2-Public1-RT" {
   vpc_id = aws_vpc.final-vpc2.id
   route {
     cidr_block = "0.0.0.0/0"
@@ -203,14 +216,36 @@ resource "aws_route_table" "vpc2-Public-RT" {
     vpc_peering_connection_id = aws_vpc_peering_connection.peering-between-vpc.id
   }
   tags = {
-    Name = "vpc2-Public-RT"
+    Name = "vpc2-Public1-RT"
+  }
+}
+
+# Связываем таблицу маршрутизации публичной сети 1 в VPC2 c публичной сетью
+resource "aws_route_table_association" "vpc2-Public1-RT-Assoc" {
+  subnet_id      = aws_subnet.vpc2-Public1.id
+  route_table_id = aws_route_table.vpc2-Public1-RT.id
+}
+
+# Создаем таблицу маршрутизации для публичной сети 1 в VPC2 c выходом в интернет
+resource "aws_route_table" "vpc2-Public2-RT" {
+  vpc_id = aws_vpc.final-vpc2.id
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.vpc2-igw.id
+  }
+  route {
+    cidr_block                = "10.0.0.0/16"
+    vpc_peering_connection_id = aws_vpc_peering_connection.peering-between-vpc.id
+  }
+  tags = {
+    Name = "vpc2-Public2-RT"
   }
 }
 
 # Связываем таблицу маршрутизации публичной сети в VPC2 c публичной сетью
-resource "aws_route_table_association" "vpc2-Public-RT-Assoc" {
-  subnet_id      = aws_subnet.vpc2-Public.id
-  route_table_id = aws_route_table.vpc2-Public-RT.id
+resource "aws_route_table_association" "vpc2-Public2-RT-Assoc" {
+  subnet_id      = aws_subnet.vpc2-Public2.id
+  route_table_id = aws_route_table.vpc2-Public2-RT.id
 }
 
 # Создаем таблицу маршрутизации для приватной сети 1 в VPC2 без выхода в интернет
@@ -332,6 +367,32 @@ resource "aws_security_group" "vpc2_Allow_ssh_icmp_http8888_inbound_traffic" {
 
   tags = {
     Name = "vpc2_Allow_ssh_icmp_http8888_inbound_traffic"
+  }
+}
+
+# Создаем группу безопасности для ALB
+resource "aws_security_group" "Security_group_for_ALB" {
+  name        = "Security_group_for_ALB"
+  description = "Security_group_for_ALB"
+  vpc_id      = aws_vpc.final-vpc2.id
+
+  ingress {
+    description = "HTTP on 80 port from the internet"
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "Security_group_for_ALB"
   }
 }
 
@@ -593,6 +654,67 @@ EOF
   }
 }
 
+# Создаем ALB
+resource "aws_lb" "lackros-alb" {
+  name               = "lackros-alb"
+  internal           = false
+  load_balancer_type = "application"
+  security_groups    = [aws_security_group.Security_group_for_ALB.id]
+  subnets            = [aws_subnet.vpc2-Public1.id, aws_subnet.vpc2-Public2.id]
+
+  tags = {
+    "name" = "lackros-alb"
+  }
+}
+
+# Создаем слушателя для ALB
+resource "aws_lb_listener" "lackros-alb_listener" {
+  load_balancer_arn = aws_lb.lackros-alb.arn
+  protocol          = "HTTP"
+  port              = 80
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.TG_WEB.arn
+  }
+}
+
+# Создаем целевую группу для ALB
+resource "aws_lb_target_group" "TG_WEB" {
+  name        = "TG-WEB"
+  port        = 8888
+  protocol    = "HTTP"
+  vpc_id      = aws_vpc.final-vpc2.id
+  target_type = "instance"
+  health_check {
+    enabled             = true
+    protocol            = "HTTP"
+    port                = 8888
+    path                = "/"
+    matcher             = "200"
+    interval            = 60
+    timeout             = 10
+    healthy_threshold   = 3
+    unhealthy_threshold = 3
+  }
+  tags = {
+    "Name" = "TG_WEB"
+  }
+}
+
+# Связываем целевую группу с веб-сервером 1
+resource "aws_lb_target_group_attachment" "TG_attache_web-server1" {
+  target_group_arn = aws_lb_target_group.TG_WEB.arn
+  target_id        = aws_instance.vpc2-private1-webserver1.id
+  port             = 8888
+}
+
+# Связываем целевую группу с веб-сервером 2
+resource "aws_lb_target_group_attachment" "TG_attache_web-server2" {
+  target_group_arn = aws_lb_target_group.TG_WEB.arn
+  target_id        = aws_instance.vpc2-private2-webserver2.id
+  port             = 8888
+}
+
 # Для удобства выводим IP адреса инстансов
 output "Bastion_Public_IP" {
   value = aws_instance.Bastion.public_ip
@@ -612,4 +734,8 @@ output "vpc2-private1-webserver1_private_IP" {
 
 output "vpc2-private2-webserver2_private_IP" {
   value = aws_instance.vpc2-private2-webserver2.private_ip
+}
+
+output "ALB-DNS-NAME" {
+  value = aws_lb.lackros-alb.dns_name
 }
