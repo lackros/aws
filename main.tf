@@ -715,26 +715,70 @@ resource "aws_lb_target_group_attachment" "TG_attache_web-server2" {
   port             = 8888
 }
 
+# Блок AUTO SCALING GROUP
+# Создаем Launch template
+resource "aws_launch_template" "Lackros_Template_final" {
+  name                   = "Lackros_Template_final"
+  image_id               = "ami-087c17d1fe0178315"
+  instance_type          = "t2.micro"
+  vpc_security_group_ids = [aws_security_group.vpc2_Allow_ssh_icmp_http8888_inbound_traffic.id]
+  user_data              = filebase64("udnginx.sh")
+  metadata_options {
+    http_endpoint = "enabled"
+  }
+}
+
+# Создаем группу автоматического масштабирования
+resource "aws_autoscaling_group" "LackrosASG" {
+  name = "LackrosASG"
+  //availability_zones        = [data.aws_availability_zones.available.names[0], data.aws_availability_zones.available.names[1]]
+  target_group_arns         = [aws_lb_target_group.TG_WEB.arn]
+  vpc_zone_identifier       = [aws_subnet.vpc2-Private1.id, aws_subnet.vpc2-Private2.id]
+  desired_capacity          = 0
+  max_size                  = 2
+  min_size                  = 1
+  health_check_grace_period = 120
+  health_check_type         = "ELB"
+
+  launch_template {
+    id      = aws_launch_template.Lackros_Template_final.id
+    version = "$Latest"
+  }
+}
+
+# Создаем политику масштабирования
+resource "aws_autoscaling_policy" "Lackros_autoscaling_policy" {
+  name        = "Lackros_autoscaling_policy"
+  policy_type = "TargetTrackingScaling"
+  target_tracking_configuration {
+    predefined_metric_specification {
+      predefined_metric_type = "ASGAverageCPUUtilization"
+    }
+    target_value = "80"
+  }
+  autoscaling_group_name = aws_autoscaling_group.LackrosASG.name
+}
+
 # Для удобства выводим IP адреса инстансов
-output "Bastion_Public_IP" {
-  value = aws_instance.Bastion.public_ip
-}
-
-output "vpc1-private1-webserver1_private_IP" {
-  value = aws_instance.vpc1-private1-webserver1.private_ip
-}
-
-output "vpc1-private2-webserver2_private_IP" {
-  value = aws_instance.vpc1-private2-webserver2.private_ip
-}
-
-output "vpc2-private1-webserver1_private_IP" {
-  value = aws_instance.vpc2-private1-webserver1.private_ip
-}
-
-output "vpc2-private2-webserver2_private_IP" {
-  value = aws_instance.vpc2-private2-webserver2.private_ip
-}
+# output "Bastion_Public_IP" {
+#   value = aws_instance.Bastion.public_ip
+# }
+#
+# output "vpc1-private1-webserver1_private_IP" {
+#   value = aws_instance.vpc1-private1-webserver1.private_ip
+# }
+#
+# output "vpc1-private2-webserver2_private_IP" {
+#   value = aws_instance.vpc1-private2-webserver2.private_ip
+# }
+#
+# output "vpc2-private1-webserver1_private_IP" {
+#   value = aws_instance.vpc2-private1-webserver1.private_ip
+# }
+#
+# output "vpc2-private2-webserver2_private_IP" {
+#   value = aws_instance.vpc2-private2-webserver2.private_ip
+# }
 
 output "ALB-DNS-NAME" {
   value = aws_lb.lackros-alb.dns_name
